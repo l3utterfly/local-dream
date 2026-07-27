@@ -35,6 +35,7 @@
 #include "Scheduler.hpp"
 #include "TextEncoder.hpp"
 #include "Tiling.hpp"
+#include "XtEvalCompat.hpp"
 
 // All per-request parameters. Image/mask buffers are pre-decoded by the
 // request parser:
@@ -265,12 +266,12 @@ class Pipeline {
   // for previews). SD applies a single reciprocal scale; Anima de-normalizes
   // per channel (latent * std + mean).
   virtual void latentsToVae(xt::xarray<float> &latents) const {
-    latents = xt::eval((1.0f / vaeScale()) * latents);
+    latents = LOCALDREAM_XT_EVAL((1.0f / vaeScale()) * latents);
   }
   // Inverse of latentsToVae: VAE-encoder output -> model latent space
   // (img2img). SD scales; Anima normalizes per channel ((latent - mean)/std).
   virtual void vaeToLatents(xt::xarray<float> &latents) const {
-    latents = xt::eval(vaeScale() * latents);
+    latents = LOCALDREAM_XT_EVAL(vaeScale() * latents);
   }
 
   TextEncoder &text_encoder_;
@@ -500,7 +501,7 @@ inline xt::xarray<float> Pipeline::encodeImageToLatent(
     auto mean = xt::adapt(vae_enc_mean, shape);
     auto std_dev = xt::adapt(vae_enc_std, shape);
     xt::xarray<float> noise_0 = xt::random::randn<float>(shape);
-    return xt::eval(mean + std_dev * noise_0);
+    return LOCALDREAM_XT_EVAL(mean + std_dev * noise_0);
   }
 
   // Tiled path (input larger than the fixed VAE graph).
@@ -713,7 +714,7 @@ inline xt::xarray<float> Pipeline::runUnetTiled(
       xt::xarray<float> pred_batch = xt::adapt(tile_out, batch2_shape);
       xt::xarray<float> uncond = xt::view(pred_batch, 0);
       xt::xarray<float> txt = xt::view(pred_batch, 1);
-      pred = xt::eval(uncond + req.cfg * (txt - uncond));
+      pred = LOCALDREAM_XT_EVAL(uncond + req.cfg * (txt - uncond));
       pred.reshape({1, 4, tile_lat, tile_lat});
     }
     pred_tiles.push_back(std::move(pred));
@@ -798,7 +799,7 @@ inline xt::xarray<float> Pipeline::ultrafixInvertNoise(
     xt::xarray<float> eps;
     if (use_v_pred_) {
       // v-prediction: eps = sqrt(abar)*v + sqrt(1-abar)*z at the source.
-      eps = xt::eval(std::sqrt(abar_src) * model_out +
+      eps = LOCALDREAM_XT_EVAL(std::sqrt(abar_src) * model_out +
                      std::sqrt(1.0f - abar_src) * z);
     } else {
       eps = std::move(model_out);
@@ -807,8 +808,8 @@ inline xt::xarray<float> Pipeline::ultrafixInvertNoise(
     const float abar_tgt = abar[t_tgt];
     // Eq. 3: reconstruct x0 at the source level, re-noise to the target.
     xt::xarray<float> x0_pred =
-        xt::eval((z - std::sqrt(1.0f - abar_src) * eps) / std::sqrt(abar_src));
-    z = xt::eval(std::sqrt(abar_tgt) * x0_pred +
+        LOCALDREAM_XT_EVAL((z - std::sqrt(1.0f - abar_src) * eps) / std::sqrt(abar_src));
+    z = LOCALDREAM_XT_EVAL(std::sqrt(abar_tgt) * x0_pred +
                  std::sqrt(1.0f - abar_tgt) * eps);
     abar_src = abar_tgt;
 
@@ -816,7 +817,7 @@ inline xt::xarray<float> Pipeline::ultrafixInvertNoise(
   }
 
   // Equivalent epsilon: z_K = sqrt(abar_K)*z0 + sqrt(1-abar_K)*eps_equiv.
-  return xt::eval((z - std::sqrt(abar_src) * z0) / std::sqrt(1.0f - abar_src));
+  return LOCALDREAM_XT_EVAL((z - std::sqrt(abar_src) * z0) / std::sqrt(1.0f - abar_src));
 }
 
 // Decodes the current latents to a base64 RGB preview, cropped the same way
@@ -949,7 +950,7 @@ inline GenerationResult Pipeline::generate(
       // pure noise -- otherwise img2img degenerates into txt2img.
       xt::xarray<float> pure_noise_latents;
       if (req.aspect_pad_synthetic_base) {
-        pure_noise_latents = xt::eval(latents);
+        pure_noise_latents = LOCALDREAM_XT_EVAL(latents);
       }
 
       // Ultrafix (PixelRush-style partial inversion): swap the random
@@ -989,7 +990,7 @@ inline GenerationResult Pipeline::generate(
           // Outside: noised black latent, kept stable each step by the mask
           // blend further down in the denoising loop.
           latents =
-              xt::eval(pure_noise_latents * mask + latents * (1.0f - mask));
+              LOCALDREAM_XT_EVAL(pure_noise_latents * mask + latents * (1.0f - mask));
         }
       }
 
@@ -1068,7 +1069,7 @@ inline GenerationResult Pipeline::generate(
               xt::adapt(unet_out_latents, shape_batch2);
           xt::xarray<float> uncond = xt::view(noise_pred_batch, 0);
           xt::xarray<float> txt = xt::view(noise_pred_batch, 1);
-          noise_pred = xt::eval(uncond + req.cfg * (txt - uncond));
+          noise_pred = LOCALDREAM_XT_EVAL(uncond + req.cfg * (txt - uncond));
         }
       }
 
@@ -1122,7 +1123,7 @@ inline GenerationResult Pipeline::generate(
             const float w_pred = (float)(std::sin(lambda * omega) / sin_omega);
             const float w_rand =
                 (float)(std::sin((1.0 - lambda) * omega) / sin_omega);
-            noise_pred = xt::eval(w_pred * noise_pred + w_rand * rand_noise);
+            noise_pred = LOCALDREAM_XT_EVAL(w_pred * noise_pred + w_rand * rand_noise);
           }
         }
       }
@@ -1157,7 +1158,7 @@ inline GenerationResult Pipeline::generate(
           xt::xarray<float> lf_orig =
               gaussian_blur_latent(orig_noised, blur_radius);
           xt::xarray<float> lf_cur = gaussian_blur_latent(latents, blur_radius);
-          latents = xt::eval(latents + w * (lf_orig - lf_cur));
+          latents = LOCALDREAM_XT_EVAL(latents + w * (lf_orig - lf_cur));
         }
       }
 
@@ -1165,7 +1166,7 @@ inline GenerationResult Pipeline::generate(
         xt::xarray<int> t_xt = {(int)(timesteps(i))};
         xt::xarray<float> orig_noised =
             scheduler->add_noise(original_latents, latents_noise, t_xt);
-        latents = xt::eval(orig_noised * (1.0f - mask) + latents * mask);
+        latents = LOCALDREAM_XT_EVAL(orig_noised * (1.0f - mask) + latents * mask);
       }
 
       current_step++;
@@ -1199,14 +1200,14 @@ inline GenerationResult Pipeline::generate(
         int px0 = (req.width - req.target_crop_width) / 2;
         int py0 = (req.height - req.target_crop_height) / 2;
         xt::xarray<float> orig_crop =
-            xt::eval(xt::view(original_image, 0, xt::all(),
+            LOCALDREAM_XT_EVAL(xt::view(original_image, 0, xt::all(),
                               xt::range(py0, py0 + req.target_crop_height),
                               xt::range(px0, px0 + req.target_crop_width)));
-        xt::xarray<float> gen_crop = xt::eval(xt::view(
+        xt::xarray<float> gen_crop = LOCALDREAM_XT_EVAL(xt::view(
             pixels, 0, xt::all(), xt::range(py0, py0 + req.target_crop_height),
             xt::range(px0, px0 + req.target_crop_width)));
         xt::xarray<float> mask_crop =
-            xt::eval(xt::view(mask_full, 0, xt::all(),
+            LOCALDREAM_XT_EVAL(xt::view(mask_full, 0, xt::all(),
                               xt::range(py0, py0 + req.target_crop_height),
                               xt::range(px0, px0 + req.target_crop_width)));
         auto blended = laplacianPyramidBlend(orig_crop, gen_crop, mask_crop);

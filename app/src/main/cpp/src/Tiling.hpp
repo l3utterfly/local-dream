@@ -16,6 +16,7 @@
 #include <xtensor/xview.hpp>
 
 #include "Config.hpp"
+#include "XtEvalCompat.hpp"
 
 // Separable Gaussian blur over the spatial dims of a [1, C, H, W] latent,
 // with edge replication at the borders. Used to split a latent into its
@@ -337,7 +338,7 @@ inline xt::xarray<float> blend_vae_encoder_tiles(
 
   xt::xarray<float> noise =
       xt::random::randn<float>({1, 4, latent_h, latent_w});
-  xt::xarray<float> latent = xt::eval(final_mean + final_std * noise);
+  xt::xarray<float> latent = LOCALDREAM_XT_EVAL(final_mean + final_std * noise);
 
   return latent;
 }

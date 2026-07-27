@@ -14,6 +14,7 @@
 
 #include "Pipeline.hpp"
 #include "SDUtils.hpp"
+#include "XtEvalCompat.hpp"
 #include "json.hpp"
 
 // Builds a GenerationRequest from the /generate JSON body: scalar params,
@@ -166,7 +167,7 @@ inline GenerationRequest parseGenerationRequest(const nlohmann::json &json,
       std::vector<int> img_shape = {1, req.height, req.width, 3};
       xt::xarray<uint8_t> xt_u8 = xt::adapt(dec_pix, img_shape);
       xt::xarray<float> xt_f = xt::cast<float>(xt_u8);
-      xt_f = xt::eval(xt_f / 127.5f - 1.0f);
+      xt_f = LOCALDREAM_XT_EVAL(xt_f / 127.5f - 1.0f);
       xt_f = xt::transpose(xt_f, {0, 3, 1, 2});
       req.img_data.assign(xt_f.begin(), xt_f.end());
     } catch (const std::exception &e) {
@@ -215,7 +216,7 @@ inline GenerationRequest parseGenerationRequest(const nlohmann::json &json,
       std::vector<int> mlat_shape = {sample_h, sample_w, 3};
       xt::xarray<uint8_t> xmlat_u8 = xt::adapt(mask_pix_lat_rgb, mlat_shape);
       xt::xarray<float> xmlat_f = xt::mean(xt::cast<float>(xmlat_u8), {2});
-      xmlat_f = xt::eval(xmlat_f / 255.0f);
+      xmlat_f = LOCALDREAM_XT_EVAL(xmlat_f / 255.0f);
       // Replicate the single-channel spatial mask across all latent channels.
       const size_t plane = (size_t)sample_h * sample_w;
       req.mask_data.resize((size_t)latent_ch * plane);
@@ -226,7 +227,7 @@ inline GenerationRequest parseGenerationRequest(const nlohmann::json &json,
       std::vector<int> mfull_shape = {req.height, req.width, 3};
       xt::xarray<uint8_t> xmfull_u8 = xt::adapt(mask_pix_full_rgb, mfull_shape);
       xt::xarray<float> xmfull_f = xt::mean(xt::cast<float>(xmfull_u8), {2});
-      xmfull_f = xt::eval(xmfull_f / 255.0f);
+      xmfull_f = LOCALDREAM_XT_EVAL(xmfull_f / 255.0f);
       xmfull_f = xt::reshape_view(xmfull_f, {1, 1, req.height, req.width});
       xt::xarray<float> xmfull_f_3 =
           xt::concatenate(xt::xtuple(xmfull_f, xmfull_f, xmfull_f), 1);

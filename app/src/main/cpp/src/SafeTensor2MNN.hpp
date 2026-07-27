@@ -16,6 +16,7 @@
 #include "LoraMapping.hpp"
 #include "SDStructure.hpp"
 #include "SafeTensorReader.hpp"
+#include "XtEvalCompat.hpp"
 
 struct Shape {
   std::vector<int> dims;
@@ -222,7 +223,7 @@ std::vector<float> applyLoRA(
             xt::adapt(final_weights, {out_features, in_features});
 
         xt::xarray<float> lora_delta =
-            xt::eval(lora_weight * alpha / rank *
+            LOCALDREAM_XT_EVAL(lora_weight * alpha / rank *
                      xt::linalg::dot(lora_up_tensor, lora_down_tensor));
 
         original_tensor += lora_delta;
