@@ -12,17 +12,9 @@
 // gigabytes of memory free. It bites the classifier-free-guidance combine, where
 // the batch view drops a dim so the result is 3-D.
 //
-// The guard is Apple-only on purpose: Android's toolchain (libc++/NDK) is
-// unaffected and must stay byte-identical. On Apple the shim forces the result
-// into a dynamic xt::xarray<T>, which takes the correct (dynamic-rank) code path
-// and is otherwise identical to xt::eval(). On every other platform it is a
-// transparent alias for xt::eval().
-//
 // TODO: remove this shim once the vendored xtensor is upgraded to a version
 // where xt::eval() deduces the result rank correctly; the guard can then go and
 // call sites can return to plain xt::eval().
-
-#if defined(__APPLE__)
 
 #include <type_traits>
 #include <utility>
@@ -38,13 +30,5 @@ inline auto xt_eval(E &&e) {
 }  // namespace localdream_compat
 
 #define LOCALDREAM_XT_EVAL(...) ::localdream_compat::xt_eval(__VA_ARGS__)
-
-#else
-
-#include <xtensor/xeval.hpp>
-
-#define LOCALDREAM_XT_EVAL(...) ::xt::eval(__VA_ARGS__)
-
-#endif  // __APPLE__
 
 #endif  // XT_EVAL_COMPAT_HPP
