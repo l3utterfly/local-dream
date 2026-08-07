@@ -1173,6 +1173,7 @@ inline GenerationResult Pipeline::generate(
     }
 
     endDenoise();
+    progress_callback(current_step, total_run_steps, "");
 
     // --- VAE Decode ---
     auto vae_dec_start = std::chrono::high_resolution_clock::now();
