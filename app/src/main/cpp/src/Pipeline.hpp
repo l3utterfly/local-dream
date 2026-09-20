@@ -42,6 +42,12 @@
 //   img_data:       [1,3,H,W] float, -1..1
 //   mask_data:      [1,4,H/8,W/8] float, 0..1 (latent-space mask)
 //   mask_data_full: [1,3,H,W] float, 0..1 (pixel-space mask)
+struct ReferenceImage {
+  std::vector<uint8_t> rgb;
+  int width = 0;
+  int height = 0;
+};
+
 struct GenerationRequest {
   std::string prompt;
   std::string negative_prompt;
@@ -60,6 +66,10 @@ struct GenerationRequest {
   std::vector<float> img_data;
   std::vector<float> mask_data;
   std::vector<float> mask_data_full;
+  // Clean reference images for native multimodal editing. These are separate
+  // from img_data: a reference is appended to the DiT token sequence instead
+  // of being noised into the generation latent.
+  std::vector<ReferenceImage> reference_images;
 
   // Wire encoding for images sent back to the client: "raw" (RGB bytes),
   // "jpeg" or "png", each base64-wrapped inside the SSE JSON. Raw stays the
@@ -107,6 +117,7 @@ struct Conditioning {
   std::vector<float> time_ids;  // [2, 6]
   int hidden_dim = 0;
   int pooled_dim = 0;
+  int negative_chunks = 1, positive_chunks = 1;
   int seq_len = 77;  // 77 for CLIP (SD/SDXL), 512 for Qwen/T5 (Anima)
 
   float *negHidden() { return hidden.data(); }
@@ -169,6 +180,7 @@ class Pipeline {
   // Loads whatever the format keeps resident. Returns false on failure.
   virtual bool initialize() = 0;
   virtual bool supportsImg2Img() const = 0;
+  virtual bool supportsReferenceEditing() const { return false; }
   bool isSdxl() const { return sdxl_; }
   // Anima runs the same fixed-1024 graphs as SDXL but isn't an SDXL pipeline;
   // the request parser uses this to force the 1024 canvas.
@@ -186,10 +198,33 @@ class Pipeline {
     nsfw_threshold_ = threshold;
   }
 
+  // Blanks an RGB result that the NSFW checker scores over the threshold.
+  // generate() runs this on its way out; any pipeline that overrides generate()
+  // has to call it too, or the filter build silently stops filtering.
+  void applySafetyChecker(std::vector<uint8_t> &rgb, int width, int height) {
+    if (!safety_interpreter_) return;
+    auto safety_start = std::chrono::high_resolution_clock::now();
+    float score = 0.0f;
+    if (safety_check(rgb, width, height, score, safety_interpreter_,
+                     safety_session_)) {
+      std::cout << "NSFW Score: " << score << std::endl;
+      if (score > nsfw_threshold_) {
+        QNN_WARN("NSFW detected (%.2f>%.2f).", score, nsfw_threshold_);
+        std::fill(rgb.begin(), rgb.end(), 255);
+      }
+    } else {
+      QNN_WARN("Safety check failed.");
+    }
+    std::cout << "Safety check dur: " << elapsedMs(safety_start) << "ms\n";
+  }
+
   // Mutates `req` only to release the decoded image buffer once it is no
   // longer needed (a ~190 MB allocation at ultrafix sizes).
-  GenerationResult generate(GenerationRequest &req,
-                            const ProgressCallback &progress_callback);
+  //
+  // Virtual for PipelineDit, whose engine owns the whole txt2img round trip
+  // and so replaces this instead of filling in the stage hooks below.
+  virtual GenerationResult generate(GenerationRequest &req,
+                                    const ProgressCallback &progress_callback);
 
  protected:
   // --- stage hooks -------------------------------------------------------
@@ -235,8 +270,6 @@ class Pipeline {
   float vaeScale() const { return sdxl_ ? 0.13025f : 0.18215f; }
 
   // --- text-conditioning generalization hooks ----------------------------
-  // Context sequence length fed to the UNet: CLIP = 77, Anima (T5/Qwen) = 512.
-  virtual int textSeqLen() const { return 77; }
   // encoder_hidden_states feature dim: SD = 768, SDXL = 768+1280, Anima = 1024.
   virtual int textHiddenDim() const {
     return sdxl_ ? text_embedding_size + text_embedding_size_2
@@ -352,9 +385,11 @@ inline Conditioning Pipeline::encodePrompts(const GenerationRequest &req) {
   Conditioning cond;
   cond.hidden_dim = textHiddenDim();
   cond.pooled_dim = textPooledDim();
-  cond.seq_len = textSeqLen();
+  cond.seq_len = text_encoder_.contextLength(req.prompt, req.negative_prompt);
   cond.hidden.assign((size_t)batch_size * cond.seq_len * cond.hidden_dim, 0.0f);
   if (sdxl_) {
+    cond.negative_chunks = std::min(cond.seq_len / 77, std::max(1, (text_encoder_.tokenizeInfo(req.negative_prompt).count + 72) / 75));
+    cond.positive_chunks = std::min(cond.seq_len / 77, std::max(1, (text_encoder_.tokenizeInfo(req.prompt).count + 72) / 75));
     cond.pooled.assign((size_t)batch_size * cond.pooled_dim, 0.0f);
     cond.time_ids.assign((size_t)batch_size * 6, 0.0f);
     for (int b = 0; b < batch_size; b++) {
@@ -382,7 +417,9 @@ inline Conditioning Pipeline::encodePrompts(const GenerationRequest &req) {
 
   const uint32_t cache_mode =
       isAnima() ? prompt_cache::kModeAnima
-                : (sdxl_ ? prompt_cache::kModeSdxl : prompt_cache::kModeSd15);
+                : (sdxl_ ? (text_encoder_.fixed_chunks_ ? prompt_cache::kModeSdxlFixedChunks
+                                                      : prompt_cache::kModeSdxlChunked)
+                       : prompt_cache::kModeSd15);
 
   bool neg_hit =
       neg_cache_eligible &&
@@ -1172,6 +1209,11 @@ inline GenerationResult Pipeline::generate(
       current_step++;
     }
 
+    // The loop reports progress on entry, so the last denoising step has no
+    // iteration left to report it. Without this the bar sits at the second to
+    // last slot through the whole VAE decode and then jumps straight to done.
+    progress_callback(current_step, total_run_steps, "");
+
     endDenoise();
     progress_callback(current_step, total_run_steps, "");
 
@@ -1235,23 +1277,7 @@ inline GenerationResult Pipeline::generate(
     int final_height = req.height;
 
     // --- Safety Checker ---
-    if (safety_interpreter_) {
-      auto safety_start = std::chrono::high_resolution_clock::now();
-      float score = 0.0f;
-
-      if (safety_check(out_data, req.width, req.height, score,
-                       safety_interpreter_, safety_session_)) {
-        std::cout << "NSFW Score: " << score << std::endl;
-        if (score > nsfw_threshold_) {
-          QNN_WARN("NSFW detected (%.2f>%.2f).", score, nsfw_threshold_);
-          std::fill(out_data.begin(), out_data.end(), 255);
-        }
-      } else {
-        QNN_WARN("Safety check failed.");
-      }
-
-      std::cout << "Safety check dur: " << elapsedMs(safety_start) << "ms\n";
-    }
+    applySafetyChecker(out_data, final_width, final_height);
 
     current_step++;
     progress_callback(current_step, total_run_steps, "");

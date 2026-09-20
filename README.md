@@ -23,7 +23,8 @@ If you like it, please consider [sponsor](#-support-this-project) this project.
 > - SD1.5 models are supported on Snapdragon NPUs with Hexagon V68 architecture or newer.
 > - SDXL models are supported on Snapdragon 8 Gen 3 and newer devices.
 >
-> If your chip is outside the above scope, you can only run SD1.5 on CPU/GPU.
+> CPU/GPU inference supports SD1.5 and imported SDXL MNN packages. Large SDXL
+> models require substantially more memory than SD1.5.
 >
 > You can join our [telegram group](https://t.me/local_dream) for discussion or help with testing.
 
@@ -39,6 +40,7 @@ Local Dream is built on top of many excellent open-source projects. Sincere than
 
 - **[Qualcomm QNN SDK](https://www.qualcomm.com/developer/software/qualcomm-ai-engine-direct-sdk)** - NPU model execution
 - **[alibaba/MNN](https://github.com/alibaba/MNN/)** - CPU model execution
+- **[happyyzy/stable-diffusion.cpp](https://github.com/happyyzy/stable-diffusion.cpp)** - Deep performance optimizations for on-device DiT inference
 - **[xtensor-stack](https://github.com/xtensor-stack)** - Tensor operations & scheduling
 - **[mlc-ai/tokenizers-cpp](https://github.com/mlc-ai/tokenizers-cpp)** - Text tokenization
 - **[yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib)** - HTTP server

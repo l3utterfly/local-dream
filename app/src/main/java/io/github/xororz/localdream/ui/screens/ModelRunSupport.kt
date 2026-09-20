@@ -14,6 +14,7 @@ import androidx.compose.runtime.Immutable
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
+import io.github.xororz.localdream.data.DitResolution
 import io.github.xororz.localdream.data.GenerationMode
 import io.github.xororz.localdream.remote.RemoteApiClient
 import io.github.xororz.localdream.remote.RemoteProtocol
@@ -241,6 +242,19 @@ fun computeAspectTargetSize(usesFixedCanvas: Boolean, aspectRatio: String, canva
 }
 
 /**
+ * Width and height a DiT model will actually run, snapped to
+ * [DitResolution.SIZE_STEP].
+ */
+const val DIT_MIN_SIZE = DitResolution.MIN_SIZE
+const val DIT_MAX_SIZE = DitResolution.MAX_SIZE
+const val DIT_SIZE_STEP = DitResolution.SIZE_STEP
+
+/** Slider positions between DIT_MIN_SIZE and DIT_MAX_SIZE, exclusive of both. */
+const val DIT_SIZE_STEPS = DitResolution.SLIDER_STEPS
+
+fun snapDitSize(value: Float): Int = DitResolution.snap(value)
+
+/**
  * GCD-reduces (width, height) into a "W:H" aspect-ratio string.
  * Used by reproduce/import paths to recover an aspect from a recorded result size.
  */
@@ -270,6 +284,39 @@ fun padBitmapToCanvas(src: Bitmap, canvasW: Int, canvasH: Int): Bitmap {
     val top = ((canvasH - src.height) / 2).toFloat()
     canvas.drawBitmap(src, left, top, null)
     return out
+}
+
+/** Snap before decoding the crop so generation and stitching use the same pixels. */
+internal fun snapInpaintCropRect(rect: Rect, imageWidth: Int, imageHeight: Int, tolerance: Int): Rect {
+    val result = Rect(rect)
+    if (imageWidth - result.width() <= tolerance) {
+        result.left = 0
+        result.right = imageWidth
+    } else if (result.right >= imageWidth - tolerance) {
+        result.offset(imageWidth - result.right, 0)
+    } else if (result.left <= tolerance) {
+        result.offset(-result.left, 0)
+    }
+    if (imageHeight - result.height() <= tolerance) {
+        result.top = 0
+        result.bottom = imageHeight
+    } else if (result.bottom >= imageHeight - tolerance) {
+        result.offset(0, imageHeight - result.bottom)
+    } else if (result.top <= tolerance) {
+        result.offset(0, -result.top)
+    }
+    return result
+}
+
+internal fun mergeDrawingLayers(previous: Bitmap?, drawing: Bitmap): Bitmap {
+    if (previous == null) return drawing
+    return previous.copy(Bitmap.Config.ARGB_8888, true).apply {
+        Canvas(this).drawBitmap(drawing, 0f, 0f, null)
+    }
+}
+
+internal fun drawImageOverlay(target: Bitmap, drawing: Bitmap, crop: Rect) {
+    Canvas(target).drawBitmap(drawing, null, crop, Paint(Paint.FILTER_BITMAP_FLAG))
 }
 
 // Feathered inpaint stitching: the generated patch went through a
@@ -468,9 +515,19 @@ internal fun bitmapToBase64Jpeg(bitmap: Bitmap, quality: Int = 95): String {
 }
 
 /** Default generation canvas side length for a model class. */
-internal fun defaultGenerationSize(usesFixedCanvas: Boolean, runOnCpu: Boolean): Int = when {
+internal fun defaultGenerationSize(
+    usesFixedCanvas: Boolean,
+    runOnCpu: Boolean,
+    isDit: Boolean = false,
+): Int = when {
+    // 1024 in 4-8 steps is where these turbo models are quick enough to feel
+    // interactive; 1536 and 2048 stay available in the resolution picker.
+    isDit -> 1024
+
     usesFixedCanvas -> 1024
+
     runOnCpu -> 256
+
     else -> 512
 }
 

@@ -271,7 +271,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
     var downloadError by remember { mutableStateOf<String?>(null) }
     var showDownloadConfirm by remember { mutableStateOf<Model?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
-    var showUpgradeConfirm by remember { mutableStateOf<Model?>(null) }
 
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedModels by remember { mutableStateOf(setOf<Model>()) }
@@ -831,33 +830,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
         }
     }
 
-    showUpgradeConfirm?.let { model ->
-        AlertDialog(
-            onDismissRequest = { showUpgradeConfirm = null },
-            title = { Text(stringResource(R.string.upgrade_model)) },
-            text = {
-                Text(stringResource(R.string.upgrade_model_hint, model.name))
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showUpgradeConfirm = null
-                        downloadingModel = model
-                        currentProgress = null
-                        model.startDownload(context)
-                    },
-                ) {
-                    Text(stringResource(R.string.confirm))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showUpgradeConfirm = null }) {
-                    Text(stringResource(R.string.cancel))
-                }
-            },
-        )
-    }
-
     Scaffold(
         topBar = {
             LargeTopAppBar(
@@ -1082,7 +1054,9 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
 
                     if (page == 1 && !remoteActive) {
                         item {
-                            AddCustomNpuModelButton(
+                            AddModelOutlinedCard(
+                                label = stringResource(R.string.add_custom_npu_model),
+                                accent = true,
                                 onClick = { showCustomNpuModelDialog = true },
                                 modifier = Modifier.fillMaxWidth(),
                             )
@@ -1153,9 +1127,6 @@ fun ModelListScreen(navController: NavController, modifier: Modifier = Modifier)
                                     isSelectionMode = true
                                     selectedModels = setOf(model)
                                 }
-                            },
-                            onUpdateClick = {
-                                showUpgradeConfirm = model
                             },
                         )
                     }
@@ -2085,7 +2056,6 @@ fun ModelCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onUpdateClick: () -> Unit = {},
     isPinned: Boolean = false,
 ) {
     val isDisabledInSelection = !model.isDownloaded && isSelectionMode
@@ -2248,32 +2218,10 @@ fun ModelCard(
                                         tint = statusColor,
                                         modifier = Modifier.size(16.dp),
                                     )
-                                    if (!model.needsUpgrade or isSelectionMode) {
-                                        Text(
-                                            text = stringResource(R.string.downloaded),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = statusColor,
-                                        )
-                                    }
-                                }
-
-                                if (model.needsUpgrade && !isSelectionMode) {
-                                    AssistChip(
-                                        onClick = onUpdateClick,
-                                        label = { Text(stringResource(R.string.update)) },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Default.Update,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(AssistChipDefaults.IconSize),
-                                            )
-                                        },
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                            labelColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                            leadingIconContentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                        ),
-                                        border = null,
+                                    Text(
+                                        text = stringResource(R.string.downloaded),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = statusColor,
                                     )
                                 }
                             }
@@ -2689,17 +2637,6 @@ fun AddCustomModelButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
         onClick = onClick,
         modifier = modifier,
         accent = false,
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AddCustomNpuModelButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    AddModelOutlinedCard(
-        label = stringResource(R.string.add_custom_npu_model),
-        onClick = onClick,
-        modifier = modifier,
-        accent = true,
     )
 }
 
