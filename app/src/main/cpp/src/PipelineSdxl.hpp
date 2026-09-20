@@ -18,6 +18,11 @@
 // released right after, trading latency for peak memory.
 class PipelineSdxl : public PipelineQnn {
  public:
+  // Covers the shared npuforge SDXL VAE decoder (QNN 2.50 device validation).
+  // The older 920 MiB default fails to load that context, which requires
+  // 1,104,281,600 bytes. All contexts in the group use this single allocation.
+  static constexpr uint64_t kDefaultSpillFillBytes = 1104281600ULL;
+
   PipelineSdxl(TextEncoder &text_encoder, const std::string &model_dir,
                std::string clip_path, std::string clip2_path,
                std::string unet_path, std::string vae_decoder_path,
@@ -292,18 +297,12 @@ class PipelineSdxl : public PipelineQnn {
     return model;
   }
 
-  // Max shared spill-fill buffer (bytes) for the SDXL non-lowram context group.
-  // Hardcoded default = 920 MiB, chosen to cover the measured per-model
-  // requirements (UNet 89,063,424 / VAE-dec 884,801,536 / VAE-enc 575,668,224)
-  // with headroom; the backend honors the group head's value so it must be >=
-  // the largest of the three. Sharing one 920 MiB buffer instead of three
-  // separate ones saves ~600 MB. The LOCALDREAM_SDXL_SPILL_FILL_BYTES env var
-  // overrides this (e.g. after regenerating binaries); set it to 0 to disable
-  // sharing entirely.
+  // Max shared scratch must cover every resident context, including the
+  // npuforge shared VAE pair. Override for other binaries; 0 disables sharing.
   static uint64_t spillFillGroupBytes() {
     const char *e = getenv("LOCALDREAM_SDXL_SPILL_FILL_BYTES");
     if (e && *e) return strtoull(e, nullptr, 10);
-    return 964689920ULL;  // 920 MiB
+    return kDefaultSpillFillBytes;
   }
 
   // Diagnostic: log a model's real HTP spill-fill requirement so the right
