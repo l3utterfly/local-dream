@@ -15,10 +15,10 @@ index 8f585ba..6909a9c 100644
              x = conv->forward(ctx, x);
          } else {
 diff --git a/src/model/common/ggml_block.hpp b/src/model/common/ggml_block.hpp
-index 185a9e1..d70be42 100644
+index d05f88b..ea99966 100644
 --- a/src/model/common/ggml_block.hpp
 +++ b/src/model/common/ggml_block.hpp
-@@ -470,6 +470,7 @@ public:
+@@ -471,6 +471,7 @@ public:
                  return out;
              }
          }
@@ -71,7 +71,9 @@ index 185a9e1..d70be42 100644
      ggml_tensor* try_forward_upscale_add(GGMLRunnerContext* ctx,
                                           ggml_tensor* x,
                                           ggml_tensor* residual,
-@@ -517,4 +556,26 @@ public:
+@@ -515,6 +554,28 @@ public:
+     }
+ 
  private:
 +    // Hexagon repacks eligible F16 1x1/3x3 weights into the HMX tile layout at
 +    // upload time, and only the direct conv kernel reads that layout. A fallback

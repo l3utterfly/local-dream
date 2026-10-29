@@ -10,6 +10,7 @@ import io.github.xororz.localdream.R
 import io.github.xororz.localdream.data.DitEngine
 import io.github.xororz.localdream.data.DitResolution
 import io.github.xororz.localdream.data.Model
+import io.github.xororz.localdream.data.ModelStorage
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
@@ -60,7 +61,7 @@ class BackendService : Service() {
         private const val TAG = "BackendService"
         private const val EXECUTABLE_NAME = "libstable_diffusion_core.so"
         const val RUNTIME_DIR = "runtime_libs"
-        private const val RUNTIME_VERSION = "qnn_2_50_0_260828"
+        private const val RUNTIME_VERSION = "qnn_2_51_0_260929"
         private const val RUNTIME_VERSION_FILE = ".runtime_version"
         private const val NOTIFICATION_ID = 2
         private const val CHANNEL_ID = "backend_service_channel"
@@ -90,7 +91,7 @@ class BackendService : Service() {
 
         // --type values served by the downloadable DiT engine.
         fun isDitBackend(backendType: String): Boolean = backendType == "zimage" ||
-            backendType == "klein" || backendType == "qwen21"
+            backendType == "klein" || backendType == "qwen21" || backendType == "krea2turbo"
 
         // One reused dir, stamped with the SDK it holds. Per-file copying only
         // refreshes libs whose size changed, so an SDK bump would otherwise
@@ -294,6 +295,12 @@ class BackendService : Service() {
             return
         }
         stopBackend()
+        // Published under the move lock: a move either sees this backend as
+        // busy and stays put, or is already running and turns the start away.
+        if (ModelStorage.unlessMoving { updateState(BackendState.Starting) } == null) {
+            updateState(BackendState.Error(getString(R.string.model_storage_moving_blocked), want.modelId))
+            return
+        }
         if (startBackend(want)) {
             serving = want
             updateServing(want)
