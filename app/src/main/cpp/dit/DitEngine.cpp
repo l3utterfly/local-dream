@@ -155,8 +155,9 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   const auto tokenizer = (std::filesystem::path(params->llm_path).parent_path() / "tokenizer.json").string();
   // Older ABI 5 callers identify MOSS with its package tokenizer.
   const char *legacy_tokenizer = std::getenv("SD_QWEN35_TOKENIZER");
-  if (params->kind == DIT_MODEL_MOSS ||
-      (params->kind == DIT_MODEL_Z_IMAGE && legacy_tokenizer && tokenizer == legacy_tokenizer)) {
+  const bool moss = params->kind == DIT_MODEL_MOSS ||
+      (params->kind == DIT_MODEL_Z_IMAGE && legacy_tokenizer && tokenizer == legacy_tokenizer);
+  if (moss) {
     sd_params.tokenizer = tokenizer.c_str();
   }
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
@@ -172,7 +173,7 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
     sd_params.params_backend = params->params_backend;
 
   auto *ctx = new dit_ctx();
-  ctx->kind = params->kind;
+  ctx->kind = moss ? DIT_MODEL_MOSS : params->kind;
   ctx->sd = new_sd_ctx(&sd_params);
   if (!ctx->sd) {
     g_create_error = "new_sd_ctx failed";
@@ -266,7 +267,7 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   if (params->vae_tile_size > 0) {
     gen.vae_tiling_params.enabled = true;
     // ABI 5 specifies latent units. sd.cpp takes image pixels.
-    const int scale = ctx->kind == DIT_MODEL_Z_IMAGE || ctx->kind == DIT_MODEL_MOSS ? 8 : 16;
+    const int scale = ctx->kind == DIT_MODEL_Z_IMAGE || ctx->kind == DIT_MODEL_KREA_2_TURBO ? 8 : 16;
     if (params->vae_tile_size > std::numeric_limits<int>::max() / scale) {
       ctx->last_error = "invalid VAE tile size";
       return false;
