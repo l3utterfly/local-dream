@@ -33,6 +33,7 @@ typedef enum {
   DIT_MODEL_FLUX2_KLEIN = 1,
   DIT_MODEL_QWEN_IMAGE_2_1 = 2,
   DIT_MODEL_KREA_2_TURBO = 4,
+  DIT_MODEL_MOSS = 5,
 } dit_model_kind;
 
 typedef struct {

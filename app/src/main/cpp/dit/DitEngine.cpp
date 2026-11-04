@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -151,6 +152,13 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   sd_params.llm_path = params->llm_path;
   sd_params.llm_vision_path = params->llm_vision_path;
   sd_params.vae_path = params->vae_path;
+  const auto tokenizer = (std::filesystem::path(params->llm_path).parent_path() / "tokenizer.json").string();
+  // Older ABI 5 callers identify MOSS with its package tokenizer.
+  const char *legacy_tokenizer = std::getenv("SD_QWEN35_TOKENIZER");
+  if (params->kind == DIT_MODEL_MOSS ||
+      (params->kind == DIT_MODEL_Z_IMAGE && legacy_tokenizer && tokenizer == legacy_tokenizer)) {
+    sd_params.tokenizer = tokenizer.c_str();
+  }
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
@@ -257,8 +265,14 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
 
   if (params->vae_tile_size > 0) {
     gen.vae_tiling_params.enabled = true;
-    gen.vae_tiling_params.tile_size_x = params->vae_tile_size;
-    gen.vae_tiling_params.tile_size_y = params->vae_tile_size;
+    // ABI 5 specifies latent units. sd.cpp takes image pixels.
+    const int scale = ctx->kind == DIT_MODEL_Z_IMAGE || ctx->kind == DIT_MODEL_MOSS ? 8 : 16;
+    if (params->vae_tile_size > std::numeric_limits<int>::max() / scale) {
+      ctx->last_error = "invalid VAE tile size";
+      return false;
+    }
+    gen.vae_tiling_params.tile_size_w = params->vae_tile_size * scale;
+    gen.vae_tiling_params.tile_size_h = params->vae_tile_size * scale;
     gen.vae_tiling_params.target_overlap = params->vae_tile_overlap;
   }
 
@@ -278,9 +292,8 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
     sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);
   }
 
-  sd_image_t *images = nullptr;
-  int image_count = 0;
-  const bool ok = generate_image(ctx->sd, &gen, &images, &image_count);
+  sd_image_generation_result_t *result = nullptr;
+  const bool ok = generate_image(ctx->sd, &gen, &result);
 
   sd_set_progress_callback(nullptr, nullptr);
   sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);
@@ -289,13 +302,13 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   // Clear the sticky cancel flag so the context stays usable afterwards.
   if (cancelled) sd_cancel_generation(ctx->sd, SD_CANCEL_RESET);
 
-  if (!ok || image_count < 1 || !images || !images[0].data) {
+  if (!ok || !result || result->count < 1 || !result->items || !result->items[0].image.data) {
     ctx->last_error = cancelled ? "cancelled" : "generate_image failed";
-    if (images) free_sd_images(images, std::max(0, image_count));
+    free_sd_image_generation_result(result);
     return false;
   }
 
-  sd_image_t &image = images[0];
+  sd_image_t &image = result->items[0].image;
   size_t pixel_count = 0;
   if (!image_pixel_count(image, &pixel_count) ||
       (image.channel != 3 && image.channel != 4)) {
@@ -303,7 +316,7 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
                       std::to_string(image.width) + "x" +
                       std::to_string(image.height) + "x" +
                       std::to_string(image.channel);
-    free_sd_images(images, image_count);
+    free_sd_image_generation_result(result);
     return false;
   }
 
@@ -314,7 +327,7 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   image.data = nullptr;
   if (out_width) *out_width = static_cast<int>(image.width);
   if (out_height) *out_height = static_cast<int>(image.height);
-  free_sd_images(images, image_count);
+  free_sd_image_generation_result(result);
   return true;
 }
 
