@@ -160,6 +160,12 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
   if (moss) {
     sd_params.tokenizer = tokenizer.c_str();
   }
+  if (params->kind == DIT_MODEL_QWEN_IMAGE_2_1) {
+    // Mobile edits retain both graph outputs and a persistent prefix cache.
+    // Disabling it recovered about 1.14 GiB in the 512px Turbo device check
+    // with identical images, leaving more memory headroom for Android.
+    sd_params.model_args = "qwen_image_2_1_prefix_cache=false";
+  }
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
