@@ -10,15 +10,57 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#include "DitBudget.h"
 #include "stable-diffusion.h"
 #include "core/util.h"
 
+#if defined(__ANDROID__)
+// ggml-hexagon's driver shim, linked in with the backend.
+extern "C" {
+int htpdrv_init(void);
+int htpdrv_get_arch(int domain, int *arch);
+}
+#endif
+
 namespace {
+
+#if defined(__ANDROID__)
+constexpr int kCdspDomain = 3;
+
+int htp_arch() {
+  if (const char *forced = std::getenv("GGML_HEXAGON_ARCH"); forced && forced[0]) {
+    return std::atoi(forced[0] == 'v' || forced[0] == 'V' ? forced + 1 : forced);
+  }
+  int arch = 0;
+  if (htpdrv_init() != 0 || htpdrv_get_arch(kCdspDomain, &arch) != 0) return 0;
+  return arch;
+}
+
+uint64_t mem_available_bytes() {
+  std::ifstream meminfo("/proc/meminfo");
+  std::string key;
+  uint64_t kib = 0;
+  std::string unit;
+  while (meminfo >> key >> kib >> unit) {
+    if (key == "MemAvailable:") return kib * 1024;
+  }
+  return 0;
+}
+
+uint64_t file_bytes(const char *path) {
+  if (!path || !path[0]) return 0;
+  std::error_code error;
+  const auto size = std::filesystem::file_size(path, error);
+  return error ? 0 : static_cast<uint64_t>(size);
+}
+#endif
 
 // stable-diffusion.cpp installs progress, preview and log callbacks globally
 // rather than per context, so the engine routes them through the generation
@@ -174,12 +216,27 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
     sd_params.model_args = "qwen_image_2_1_prefix_cache=false";
   }
 #if defined(__ANDROID__)
-  // HTP reports no live memory capacity. Bound managed weights/workspaces for
-  // every DiT model so segmentation leaves room for the UI, CPU and Android.
-  // DIT_MAX_VRAM overrides the budget for device A/B runs without an ABI change.
-  const char *max_vram = std::getenv("DIT_MAX_VRAM");
-  sd_params.max_vram = max_vram && max_vram[0] ? max_vram : "HTP0=5";
-  sd_trace_stage("dit", (std::string("managed-budget.") + sd_params.max_vram + "GiB").c_str());
+  // HTP reports no live memory capacity, so the budget is chosen here (see
+  // DitBudget.h). DIT_MAX_VRAM overrides it for device A/B runs without an ABI
+  // change; DIT_MAX_VRAM=whole keeps every component resident.
+  std::string max_vram;
+  if (const char *forced = std::getenv("DIT_MAX_VRAM"); forced && forced[0]) {
+    max_vram = std::strcmp(forced, "whole") == 0 ? "" : forced;
+  } else {
+    dit_budget::Inputs budget;
+    budget.htp_arch = htp_arch();
+    budget.mem_available = mem_available_bytes();
+    budget.dit_bytes = file_bytes(params->diffusion_model_path);
+    budget.largest_component = std::max(budget.dit_bytes, file_bytes(params->llm_path));
+    budget.klein = params->kind == DIT_MODEL_FLUX2_KLEIN;
+    const std::string gib = dit_budget::htp_budget_gib(budget);
+    if (!gib.empty()) max_vram = "HTP0=" + gib;
+    sd_trace_stage("dit", ("managed-budget.inputs arch=v" + std::to_string(budget.htp_arch) +
+                           " mem_available=" + std::to_string(budget.mem_available) +
+                           " largest_component=" + std::to_string(budget.largest_component)).c_str());
+  }
+  if (!max_vram.empty()) sd_params.max_vram = max_vram.c_str();
+  sd_trace_stage("dit", ("managed-budget." + (max_vram.empty() ? std::string("whole") : max_vram + "GiB")).c_str());
 #endif
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
   sd_params.flash_attn = params->flash_attn;
