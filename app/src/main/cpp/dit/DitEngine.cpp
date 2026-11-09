@@ -176,8 +176,10 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
 #if defined(__ANDROID__)
   // HTP reports no live memory capacity. Bound managed weights/workspaces for
   // every DiT model so segmentation leaves room for the UI, CPU and Android.
-  sd_params.max_vram = "HTP0=5";
-  sd_trace_stage("dit", "managed-budget.HTP0=5GiB");
+  // DIT_MAX_VRAM overrides the budget for device A/B runs without an ABI change.
+  const char *max_vram = std::getenv("DIT_MAX_VRAM");
+  sd_params.max_vram = max_vram && max_vram[0] ? max_vram : "HTP0=5";
+  sd_trace_stage("dit", (std::string("managed-budget.") + sd_params.max_vram + "GiB").c_str());
 #endif
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
   sd_params.flash_attn = params->flash_attn;
