@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "stable-diffusion.h"
+#include "core/util.h"
 
 namespace {
 
@@ -109,11 +110,17 @@ void forward_progress(int step, int steps, float time, void *) {
   // not let those unrelated counters drive the UI progress bar.
   const int routed_steps =
       g_active.sampling && steps == g_active.sampling_steps ? steps : 0;
+  if (routed_steps > 0) {
+    sd_trace_stage("dit", ("sampling-progress.begin step=" + std::to_string(step)).c_str());
+  }
   if (!g_active.progress(step, routed_steps, time, g_active.user_data)) {
     // The callback asked to stop. sd_cancel_generation only takes effect at
     // the next step boundary, so record it for the generate() return path.
     g_active.cancelled = true;
     if (g_active.ctx && g_active.ctx->sd) sd_cancel_generation(g_active.ctx->sd, SD_CANCEL_ALL);
+  }
+  if (routed_steps > 0) {
+    sd_trace_stage("dit", ("sampling-progress.end step=" + std::to_string(step)).c_str());
   }
 }
 
@@ -166,6 +173,12 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
     // with identical images, leaving more memory headroom for Android.
     sd_params.model_args = "qwen_image_2_1_prefix_cache=false";
   }
+#if defined(__ANDROID__)
+  // HTP reports no live memory capacity. Bound managed weights/workspaces for
+  // every DiT model so segmentation leaves room for the UI, CPU and Android.
+  sd_params.max_vram = "HTP0=5";
+  sd_trace_stage("dit", "managed-budget.HTP0=5GiB");
+#endif
   sd_params.n_threads = params->n_threads > 0 ? params->n_threads : 4;
   sd_params.flash_attn = params->flash_attn;
   sd_params.diffusion_flash_attn = params->flash_attn;
@@ -180,7 +193,9 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
 
   auto *ctx = new dit_ctx();
   ctx->kind = moss ? DIT_MODEL_MOSS : params->kind;
+  sd_trace_stage("dit", "context-create.begin");
   ctx->sd = new_sd_ctx(&sd_params);
+  sd_trace_stage("dit", "context-create.end");
   if (!ctx->sd) {
     g_create_error = "new_sd_ctx failed";
     delete ctx;
@@ -300,7 +315,9 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   }
 
   sd_image_generation_result_t *result = nullptr;
+  sd_trace_stage("dit", "generate-image.begin");
   const bool ok = generate_image(ctx->sd, &gen, &result);
+  sd_trace_stage("dit", ok ? "generate-image.end" : "generate-image.failed");
 
   sd_set_progress_callback(nullptr, nullptr);
   sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);
@@ -349,6 +366,16 @@ void engine_set_log_callback(dit_log_cb cb, void *user_data) {
   g_log_cb = cb;
   g_log_user_data = user_data;
   sd_set_log_callback(cb ? forward_log : nullptr, nullptr);
+#if defined(__ANDROID__)
+  if (cb) {
+    // Diagnostic bundle: enable before the HTP registry reads its options.
+    // Explicit environment overrides keep the same build usable for A/B runs.
+    setenv("SD_TRACE", "1", 0);
+    setenv("GGML_HEXAGON_TRACE", "1", 0);
+    setenv("GGML_HEXAGON_PROFILE", "1", 0);
+    sd_trace_stage("dit-layla-11", "diagnostics-enabled");
+  }
+#endif
 }
 
 void engine_set_preview_interval(dit_ctx *ctx, int interval) {

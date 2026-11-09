@@ -28,6 +28,7 @@ add_library(dit_engine SHARED DitEngine.cpp)
 target_include_directories(dit_engine PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include"
     "${SDCPP_DIR}/include"
+    "${SDCPP_DIR}/src"
 )
 
 target_link_libraries(dit_engine PRIVATE stable-diffusion log)
