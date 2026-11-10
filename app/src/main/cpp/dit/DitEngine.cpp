@@ -130,19 +130,11 @@ struct dit_ctx {
 namespace {
 
 void forward_log(enum sd_log_level_t level, const char *text, void *) {
-  // stable-diffusion.cpp uses the same global progress callback for model
-  // loading, tiled VAE work and sampling. Its image pipeline emits these
-  // messages immediately around sd->sample(), so use them to preserve the
-  // stage across the otherwise phase-less callback ABI.
-  if (g_active.ctx && text) {
-    if (std::strstr(text, "generating image:")) {
-      g_active.sampling = true;
-    } else if (std::strstr(text, "sampling completed") ||
-               std::strstr(text, "Diffusion model sampling failed")) {
-      g_active.sampling = false;
-    }
-  }
   if (g_log_cb) g_log_cb(static_cast<int>(level), text ? text : "", g_log_user_data);
+}
+
+void forward_sampling(bool active, void *) {
+  g_active.sampling = active;
 }
 
 void forward_progress(int step, int steps, float time, void *) {
@@ -365,6 +357,7 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   }
   g_active = ActiveGeneration{progress, preview, user_data, ctx, false, false,
                               sampling_steps};
+  sd_set_sampling_callback(forward_sampling, nullptr);
   sd_set_progress_callback(progress ? forward_progress : nullptr, nullptr);
   if (preview && ctx->preview_interval > 0) {
     sd_set_preview_callback(forward_preview, PREVIEW_PROJ, ctx->preview_interval,
@@ -379,6 +372,7 @@ bool engine_generate(dit_ctx *ctx, const dit_gen_params *params, dit_progress_cb
   sd_trace_stage("dit", ok ? "generate-image.end" : "generate-image.failed");
 
   sd_set_progress_callback(nullptr, nullptr);
+  sd_set_sampling_callback(nullptr, nullptr);
   sd_set_preview_callback(nullptr, PREVIEW_NONE, 0, false, false, nullptr);
   const bool cancelled = g_active.cancelled;
   g_active = ActiveGeneration{};
@@ -425,16 +419,6 @@ void engine_set_log_callback(dit_log_cb cb, void *user_data) {
   g_log_cb = cb;
   g_log_user_data = user_data;
   sd_set_log_callback(cb ? forward_log : nullptr, nullptr);
-#if defined(__ANDROID__)
-  if (cb) {
-    // Diagnostic bundle: enable before the HTP registry reads its options.
-    // Explicit environment overrides keep the same build usable for A/B runs.
-    setenv("SD_TRACE", "1", 0);
-    setenv("GGML_HEXAGON_TRACE", "1", 0);
-    setenv("GGML_HEXAGON_PROFILE", "1", 0);
-    sd_trace_stage("dit-layla-11", "diagnostics-enabled");
-  }
-#endif
 }
 
 void engine_set_preview_interval(dit_ctx *ctx, int interval) {

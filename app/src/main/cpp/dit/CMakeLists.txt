@@ -10,6 +10,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+option(DIT_DIAGNOSTICS "Enable DiT informational logs and optional Hexagon profiling" OFF)
+if(NOT DIT_DIAGNOSTICS)
+    add_compile_definitions(SD_QUIET_LOGS GGML_QUIET_LOGS)
+endif()
+
 set(SDCPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/stable-diffusion.cpp")
 
 set(GGML_HEXAGON ON CACHE BOOL "" FORCE)
