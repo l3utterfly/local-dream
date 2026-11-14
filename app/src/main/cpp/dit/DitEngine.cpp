@@ -43,23 +43,21 @@ int htp_arch() {
   return arch;
 }
 
-uint64_t mem_available_bytes() {
+std::optional<uint64_t> mem_available_bytes() {
   std::ifstream meminfo("/proc/meminfo");
   std::string key;
   uint64_t kib = 0;
   std::string unit;
   while (meminfo >> key >> kib >> unit) {
-    if (key == "MemAvailable:") return kib * 1024;
+    if (key == "MemAvailable:") {
+      if (unit != "kB" || kib > std::numeric_limits<uint64_t>::max() / 1024)
+        return std::nullopt;
+      return kib * 1024;
+    }
   }
-  return 0;
+  return std::nullopt;
 }
 
-uint64_t file_bytes(const char *path) {
-  if (!path || !path[0]) return 0;
-  std::error_code error;
-  const auto size = std::filesystem::file_size(path, error);
-  return error ? 0 : static_cast<uint64_t>(size);
-}
 #endif
 
 // stable-diffusion.cpp installs progress, preview and log callbacks globally
@@ -218,14 +216,16 @@ dit_ctx *engine_create(const dit_ctx_params *params) {
     dit_budget::Inputs budget;
     budget.htp_arch = htp_arch();
     budget.mem_available = mem_available_bytes();
-    budget.dit_bytes = file_bytes(params->diffusion_model_path);
-    budget.largest_component = std::max(budget.dit_bytes, file_bytes(params->llm_path));
     budget.klein = params->kind == DIT_MODEL_FLUX2_KLEIN;
-    const std::string gib = dit_budget::htp_budget_gib(budget);
-    if (!gib.empty()) max_vram = "HTP0=" + gib;
+    try {
+      max_vram = "HTP0=" + dit_budget::htp_budget_gib(budget);
+    } catch (const std::runtime_error &error) {
+      g_create_error = error.what();
+      return nullptr;
+    }
     sd_trace_stage("dit", ("managed-budget.inputs arch=v" + std::to_string(budget.htp_arch) +
-                           " mem_available=" + std::to_string(budget.mem_available) +
-                           " largest_component=" + std::to_string(budget.largest_component)).c_str());
+                           " mem_available=" + (budget.mem_available ? std::to_string(*budget.mem_available) : "unknown") +
+                           " reserved_headroom=" + std::to_string(dit_budget::kReservedHeadroom)).c_str());
   }
   if (!max_vram.empty()) sd_params.max_vram = max_vram.c_str();
   sd_trace_stage("dit", ("managed-budget." + (max_vram.empty() ? std::string("whole") : max_vram + "GiB")).c_str());
