@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "DitEngine.h"
+#include "GenerationProgress.h"
 #include "Pipeline.hpp"
 
 // Z-Image Turbo, FLUX.2/Klein and Qwen Image 2.1, run by libdit_engine.so.
@@ -198,13 +199,23 @@ class PipelineDit : public Pipeline {
     }
 
     // One slot per VAE encode before sampling: every reference, plus the
-    // init latent for img2img/inpaint.
-    const int pre_sample_steps =
-        static_cast<int>(reference_ptrs.size()) +
-        (params.init_image_rgb != nullptr ? 1 : 0);
-    Callbacks callbacks{&req, &progress_callback, nullptr, {}, 0, 0, 0, false,
-                        native_edit && params.init_image_rgb == nullptr,
-                        pre_sample_steps};
+    // init latent for img2img/inpaint. Denoise strength trims an img2img
+    // schedule (a 4-step Klein request may sample only 1-3 steps) unless a
+    // native edit runs the complete one; the engine's effective step count
+    // replaces this estimate as soon as sampling starts.
+    localdream::GenerationPlan plan;
+    plan.pre_sample_slots = static_cast<int>(reference_ptrs.size()) +
+                            (params.init_image_rgb != nullptr ? 1 : 0);
+    const bool full_schedule =
+        (native_edit && params.init_image_rgb == nullptr) || !req.img2img ||
+        req.denoise_strength >= 1.0f;
+    plan.pass_steps = {
+        full_schedule
+            ? std::max(1, req.steps)
+            : std::clamp(static_cast<int>(req.steps * req.denoise_strength) + 1,
+                         1, std::max(1, req.steps))};
+    Callbacks callbacks{&req, &progress_callback, nullptr, {}, 0, false,
+                        localdream::GenerationProgressTracker(std::move(plan))};
     const auto start = std::chrono::high_resolution_clock::now();
 
     uint8_t *out_pixels = nullptr;
@@ -295,14 +306,11 @@ class PipelineDit : public Pipeline {
     std::exception_ptr pending;
     std::string preview_b64;
     int first_step_ms = 0;
-    // Highest effective sampling step seen so far. The engine marks model
-    // loading and VAE work with total_steps=0 so those counters cannot move
-    // the generation bar.
-    int sampled_steps = 0;
-    int sample_steps = 0;
     bool sampling_started = false;
-    bool full_sampling_schedule = false;
-    int pre_sample_steps = 0;
+    // The engine reports sampling with its effective step count and marks
+    // model loading and VAE work with total_steps=0, so those counters label
+    // the current phase without moving the bar.
+    localdream::GenerationProgressTracker tracker;
   };
 
   static std::vector<uint8_t> planarFloatToRgb(const std::vector<float> &planar,
@@ -385,38 +393,21 @@ class PipelineDit : public Pipeline {
   static bool forwardProgress(int step, int total_steps, float step_seconds,
                               void *user_data) {
     auto *cb = static_cast<Callbacks *>(user_data);
+    localdream::GenerationProgress progress;
     if (total_steps > 0) {
-      cb->sampling_started = true;
-      cb->sample_steps = total_steps;
-      cb->sampled_steps =
-          std::max(cb->sampled_steps, std::clamp(step, 0, total_steps));
+      if (!cb->sampling_started) {
+        cb->sampling_started = true;
+        cb->tracker.begin_pass(total_steps);
+      }
       if (step == 1)
         cb->first_step_ms = static_cast<int>(step_seconds * 1000.0f);
+      progress = cb->tracker.sampled(step);
+    } else {
+      progress = cb->tracker.auxiliary(step, total_steps);
     }
 
-    // img2img/inpaint first encodes the source image, so reserve one slot
-    // before sampling. Every mode reserves the last slot for VAE decode. Most
-    // importantly, use the *effective* step count reported by the engine:
-    // denoise strength trims a 4-step Klein request to only 1-3 sampling steps.
-    const int expected_steps =
-        cb->full_sampling_schedule || !cb->req->img2img ||
-                cb->req->denoise_strength >= 1.0f
-            ? std::max(1, cb->req->steps)
-            : std::clamp(
-                  static_cast<int>(cb->req->steps *
-                                   cb->req->denoise_strength) +
-                      1,
-                  1, std::max(1, cb->req->steps));
-    const int sample_steps =
-        cb->sample_steps > 0 ? cb->sample_steps : expected_steps;
-    const int pre_sample = cb->pre_sample_steps;
-    const int scale = pre_sample + sample_steps + 1;
-    const int reported = cb->sampling_started
-                             ? pre_sample + cb->sampled_steps
-                             : 0;
-
     try {
-      (*cb->progress)(reported, scale, cb->preview_b64);
+      (*cb->progress)(progress, cb->preview_b64);
       cb->preview_b64.clear();
       return true;
     } catch (...) {

@@ -514,9 +514,14 @@ static void registerGenerateEndpoint(httplib::Server &svr, Pipeline *pipeline) {
             try {
               std::lock_guard<std::mutex> generation_lock(g_generation_mutex);
               auto result = pipeline->generate(
-                  *req, [&sink, &req](int s, int t, const std::string &img) {
-                    nlohmann::json p = {
-                        {"type", "progress"}, {"step", s}, {"total_steps", t}};
+                  *req, [&sink, &req](const localdream::GenerationProgress &progress,
+                                      const std::string &img) {
+                    nlohmann::json p = {{"type", "progress"},
+                                        {"step", progress.step},
+                                        {"total_steps", progress.total},
+                                        {"phase", progress.phase},
+                                        {"phase_step", progress.phase_step},
+                                        {"phase_total", progress.phase_total}};
                     if (!img.empty()) {
                       p["image"] = img;
                       p["format"] = req->preview_format;

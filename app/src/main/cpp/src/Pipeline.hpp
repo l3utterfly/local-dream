@@ -22,6 +22,7 @@
 #include <xtensor/xview.hpp>
 
 #include "Config.hpp"
+#include "GenerationProgress.h"
 #include "DPMSolverMultistepScheduler.hpp"
 #include "EulerAncestralDiscreteScheduler.hpp"
 #include "EulerDiscreteScheduler.hpp"
@@ -105,8 +106,10 @@ struct GenerationRequest {
   int ultrafix_tile = 512;
 };
 
-// step / total_steps / optional base64 preview image.
-using ProgressCallback = std::function<void(int, int, const std::string &)>;
+// Overall bar, current phase (see GenerationProgress.h) and an optional
+// base64 preview image.
+using ProgressCallback = std::function<void(
+    const localdream::GenerationProgress &, const std::string &)>;
 
 // CLIP outputs for the [negative, positive] batch. `hidden` is what the UNet
 // consumes as encoder_hidden_states; `pooled` and `time_ids` only exist for
@@ -947,13 +950,24 @@ inline GenerationResult Pipeline::generate(
     int total_run_steps = req.steps + (req.img2img ? 1 : 0) + 2;
     int current_step = 0;
     const int batch_size = 2;
+    // Each report names the work that runs from now on.
+    auto report = [&](const char *phase, int phase_step, int phase_total,
+                      const std::string &preview = std::string()) {
+      progress_callback(localdream::GenerationProgress{current_step,
+                                                       total_run_steps, phase,
+                                                       phase_step, phase_total},
+                        preview);
+    };
 
     // --- CLIP ---
     auto clip_start = std::chrono::high_resolution_clock::now();
     Conditioning cond = encodePrompts(req);
     std::cout << "CLIP dur: " << elapsedMs(clip_start) << "ms\n";
     current_step++;
-    progress_callback(current_step, total_run_steps, "");
+    if (req.img2img)
+      report(localdream::kPhasePreparing, 0, 0);
+    else
+      report(localdream::kPhaseSampling, 0, req.steps);
 
     // --- Scheduler & Latents ---
     const char *timestep_spacing = sdxl_ ? "trailing" : "leading";
@@ -1029,7 +1043,7 @@ inline GenerationResult Pipeline::generate(
         latents_noise = ultrafixInvertNoise(
             req, original_latents, timesteps, start_step, cond, [&]() {
               current_step++;
-              progress_callback(current_step, total_run_steps, "");
+              report(localdream::kPhasePreparing, 0, 0);
             });
         std::cout << "Ultrafix inversion dur: " << elapsedMs(inv_start)
                   << "ms\n";
@@ -1062,7 +1076,8 @@ inline GenerationResult Pipeline::generate(
       }
 
       current_step++;
-      progress_callback(current_step, total_run_steps, "");
+      report(localdream::kPhaseSampling, 0,
+             (int)timesteps.size() - start_step);
     }
 
     // --- UNET Denoising Loop ---
@@ -1081,13 +1096,14 @@ inline GenerationResult Pipeline::generate(
 
     beginDenoise(req);
 
+    const int sample_total = (int)timesteps.size() - start_step;
     for (int i = start_step; i < (int)timesteps.size(); ++i) {
       if (req.show_diffusion_process && previewSupported() &&
           (i - start_step) % req.show_diffusion_stride == 0) {
-        progress_callback(current_step, total_run_steps,
-                          renderPreview(req, latents));
+        report(localdream::kPhaseSampling, i - start_step, sample_total,
+               renderPreview(req, latents));
       } else {
-        progress_callback(current_step, total_run_steps, "");
+        report(localdream::kPhaseSampling, i - start_step, sample_total);
       }
 
       auto step_start_time = std::chrono::high_resolution_clock::now();
@@ -1233,10 +1249,10 @@ inline GenerationResult Pipeline::generate(
     // The loop reports progress on entry, so the last denoising step has no
     // iteration left to report it. Without this the bar sits at the second to
     // last slot through the whole VAE decode and then jumps straight to done.
-    progress_callback(current_step, total_run_steps, "");
+    report(localdream::kPhaseDecoding, 0, 0);
 
     endDenoise();
-    progress_callback(current_step, total_run_steps, "");
+    report(localdream::kPhaseDecoding, 0, 0);
 
     // --- VAE Decode ---
     auto vae_dec_start = std::chrono::high_resolution_clock::now();
@@ -1301,7 +1317,7 @@ inline GenerationResult Pipeline::generate(
     applySafetyChecker(out_data, final_width, final_height);
 
     current_step++;
-    progress_callback(current_step, total_run_steps, "");
+    report(localdream::kPhaseDecoding, 0, 0);
     auto total_time = elapsedMs(start_time);
 
     // SDXL aspect-ratio padded inpaint: crop the centered target region out
